@@ -1,10 +1,12 @@
 export type UserRole = "player" | "admin";
 export type ApprovalStatus = "pending" | "approved" | "rejected";
+export type PlayerGender = "L" | "P";
 
 export type Profile = {
   id: string;
   email: string;
   display_name: string;
+  gender: PlayerGender | null;
   role: UserRole;
   approval_status: ApprovalStatus;
   created_at: string;
@@ -26,6 +28,12 @@ export type SessionParticipant = {
   joined_at: string;
   checked_in_at: string;
   left_at: string | null;
+};
+
+export type SessionWaitlistEntry = {
+  session_id: string;
+  player_id: string;
+  queued_at: string;
 };
 
 export type MatchRecord = {
@@ -53,6 +61,7 @@ export type AuthContext = {
 export type PlayerLeaderboardRow = {
   id: string;
   name: string;
+  gender: PlayerGender | null;
   sessions: number;
   games: number;
   wins: number;

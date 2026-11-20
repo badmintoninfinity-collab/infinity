@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import type { MatchRecord } from "@/lib/types";
@@ -10,6 +10,7 @@ function friendlyError(error: { message?: string } | null) {
   const message = error?.message ?? "Terjadi kendala. Coba lagi.";
   const known: Record<string, string> = {
     session_capacity_reached: "Kuota sesi sudah penuh.",
+    waiting_list_full: "Daftar tunggu sudah penuh, berisi 10 pemain.",
     capacity_below_current_participants: "Jumlah lapangan tidak boleh membuat kuota di bawah jumlah pemain yang sudah absen.",
     finish_active_matches_first: "Selesaikan semua permainan yang sedang berjalan sebelum menutup sesi.",
     finish_active_match_before_leaving: "Selesaikan permainanmu terlebih dahulu sebelum keluar dari sesi.",
@@ -34,9 +35,10 @@ export function SessionManager({ initialView, userId, isAdmin }: { initialView: 
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
+  const [notificationError, setNotificationError] = useState("");
   const supabase = isAdmin ? null : createClient();
 
-  const { session, players, participants, matches, matchPlayers } = initialView;
+  const { session, players, participants, waitingList, matches, matchPlayers } = initialView;
   const names = new Map(players.map((player) => [player.id, player.display_name]));
   const participantById = new Map(participants.map((participant) => [participant.player_id, participant]));
   const present = participants.filter((participant) => participant.left_at === null);
@@ -44,8 +46,30 @@ export function SessionManager({ initialView, userId, isAdmin }: { initialView: 
   const activeMatches = matches.filter((match) => match.ended_at === null);
   const availablePlayers = present.filter((participant) => !inActiveMatch.has(participant.player_id));
   const currentParticipation = participantById.get(userId);
+  const currentWaitingIndex = waitingList.findIndex((entry) => entry.player_id === userId);
+  const currentWaitingPosition = currentWaitingIndex < 0 ? 0 : currentWaitingIndex + 1;
   const activeCount = matches.filter((match) => match.ended_at !== null).reduce((total, match) => total + (match.shuttlecocks_used ?? 0), 0);
   const gamePlayerIds = useMemo(() => new Map(matchPlayers.map((entry) => [entry.match_id, matchPlayers.filter((item) => item.match_id === entry.match_id)])), [matches, matchPlayers]);
+
+  useEffect(() => {
+    if (!session) return;
+    const refreshTimer = window.setInterval(() => router.refresh(), 15000);
+    return () => window.clearInterval(refreshTimer);
+  }, [router, session?.id]);
+
+  useEffect(() => {
+    if (isAdmin || !session || waitingList.length !== 10 || currentWaitingPosition !== 10) return;
+    setNotificationError("");
+    void fetch("/api/notifications/waitlist-full", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ session_id: session.id }),
+    }).then(async (response) => {
+      if (response.ok) return;
+      const result = await response.json().catch(() => null) as { error?: string } | null;
+      setNotificationError(result?.error ?? "Notifikasi WhatsApp belum terkirim. Hubungi admin PB.");
+    }).catch(() => setNotificationError("Notifikasi WhatsApp belum terkirim. Hubungi admin PB."));
+  }, [isAdmin, session?.id, waitingList.length, currentWaitingPosition]);
 
   async function adminAction(action: string, params: Record<string, unknown>) {
     try {
@@ -61,9 +85,9 @@ export function SessionManager({ initialView, userId, isAdmin }: { initialView: 
     }
   }
 
-  async function run(action: () => PromiseLike<{ error: { message?: string } | null }>, success: string) {
+  async function run(action: () => PromiseLike<{ error: { message?: string } | null; data?: unknown }>, success: string | ((data: unknown) => string)) {
     setBusy(true); setMessage(""); setErrorMessage("");
-    let result: { error: { message?: string } | null };
+    let result: { error: { message?: string } | null; data?: unknown };
     try {
       result = await action();
     } catch {
@@ -71,7 +95,7 @@ export function SessionManager({ initialView, userId, isAdmin }: { initialView: 
     }
     setBusy(false);
     if (result.error) setErrorMessage(friendlyError(result.error));
-    else { setMessage(success); setSelectedPlayers([]); setRemoveTarget(null); setFinishMatchId(null); router.refresh(); }
+    else { setMessage(typeof success === "function" ? success(result.data) : success); setSelectedPlayers([]); setRemoveTarget(null); setFinishMatchId(null); router.refresh(); }
   }
 
   function togglePlayer(playerId: string) {
@@ -85,20 +109,32 @@ export function SessionManager({ initialView, userId, isAdmin }: { initialView: 
   </>;
 
   const capacity = session.court_count * 10;
+  const remainingSpots = Math.max(0, capacity - present.length);
+  const sessionIsFull = remainingSpots === 0;
   const ownIsPresent = currentParticipation?.left_at === null;
   const canRemove = isAdmin;
 
   return <>
     <div className="page-heading"><p className="eyebrow">SESI BERMAIN</p><h1>Sesi sekarang</h1><p>Absen saat tiba, lalu lihat pemain dan pertandingan yang berlangsung.</p></div>
-    <section className="session-overview"><div><strong>{session.name}</strong><p>{session.court_count} lapangan · kapasitas {capacity} pemain · {present.length} sudah absen</p></div><span className="live-label">AKTIF</span></section>
+    <section className={`session-overview${sessionIsFull ? " session-overview-full" : ""}`}><div><strong>{session.name}</strong><p>{session.court_count} lapangan · kapasitas {capacity} pemain · {present.length} sudah absen</p></div><span className={sessionIsFull ? "capacity-state full" : "capacity-state open"}>{sessionIsFull ? "TEMPAT PENUH" : `${remainingSpots} tempat tersedia`}</span></section>
 
     <section className="surface">
-      <div className="surface-heading"><div><h2>Kehadiran pemain</h2><p>{present.length} dari {capacity} tempat terisi</p></div><span className="capacity-pill">{capacity - present.length} tempat</span></div>
-      {!isAdmin && (ownIsPresent ? <button className="button button-muted" disabled={busy || inActiveMatch.has(userId)} onClick={() => void run(() => supabase!.rpc("leave_club_session", { p_session_id: session.id }), "Kamu sudah keluar dari sesi.")}>{inActiveMatch.has(userId) ? "Selesaikan permainan untuk keluar" : "Keluar dari sesi"}</button>
-        : <button className="button" disabled={busy || present.length >= capacity} onClick={() => void run(() => supabase!.rpc("check_in_to_session", { p_session_id: session.id }), "Kehadiranmu sudah tercatat.")}>{present.length >= capacity ? "Sesi penuh" : "Absen hadir"}</button>)}
+      <div className="surface-heading"><div><h2>Kehadiran pemain</h2><p>{present.length} dari {capacity} tempat terisi</p></div><span className={sessionIsFull ? "capacity-pill capacity-pill-full" : "capacity-pill"}>{sessionIsFull ? "Penuh" : `${remainingSpots} tempat`}</span></div>
+      <div className="capacity-meter" role="progressbar" aria-label="Kapasitas sesi" aria-valuemin={0} aria-valuemax={capacity} aria-valuenow={Math.min(present.length, capacity)}><span style={{ width: `${Math.min(100, (present.length / capacity) * 100)}%` }} /></div>
+      {!isAdmin && (ownIsPresent ? <button className="button button-muted" disabled={busy || inActiveMatch.has(userId)} onClick={() => void run(() => supabase!.rpc("leave_club_session", { p_session_id: session.id }), "Kamu sudah keluar dari sesi. Jika ada antrean, pemain berikutnya akan langsung mendapat tempat.")}>{inActiveMatch.has(userId) ? "Selesaikan permainan untuk keluar" : "Keluar dari sesi"}</button>
+        : currentWaitingIndex >= 0 ? <div className="waiting-own-status"><span>Kamu di urutan <strong>{currentWaitingPosition}</strong> dari {waitingList.length}</span><button className="button button-muted" disabled={busy} onClick={() => void run(() => supabase!.rpc("leave_session_waitlist", { p_session_id: session.id }), "Kamu keluar dari daftar tunggu.")}>Keluar antrean</button></div>
+          : sessionIsFull ? <div className="waiting-join"><button className="button" disabled={busy || waitingList.length >= 10} onClick={() => void run(() => supabase!.rpc("join_session_waitlist", { p_session_id: session.id }), (data) => (data as { status?: string } | null)?.status === "attending" ? "Ada tempat kosong; kamu langsung masuk sesi." : "Kamu masuk daftar tunggu.")}>{waitingList.length >= 10 ? "Daftar tunggu penuh" : "Masuk daftar tunggu"}</button><small>{waitingList.length >= 10 ? "Antrean sudah mencapai batas 10 pemain." : "Urutan antrean mengikuti waktu pendaftaran."}</small></div>
+            : <button className="button" disabled={busy} onClick={() => void run(() => supabase!.rpc("check_in_to_session", { p_session_id: session.id }), "Kehadiranmu sudah tercatat.")}>Absen hadir</button>)}
       {isAdmin && <p className="hint">Admin juga dapat mengelola kapasitas dan mengeluarkan pemain di daftar ini.</p>}
       {present.length ? <ul className="manage-list roster-list">{present.map((participant) => <li key={participant.player_id}><span className="avatar">{(names.get(participant.player_id) ?? "P").slice(0, 1).toUpperCase()}</span><strong>{names.get(participant.player_id) ?? "Pemain"}{participant.player_id === userId ? " (kamu)" : ""}</strong><small className="muted">{inActiveMatch.has(participant.player_id) ? "Sedang bermain" : "Hadir"}</small>{canRemove && <button className="small-action" disabled={busy || inActiveMatch.has(participant.player_id)} onClick={() => setRemoveTarget({ id: participant.player_id, name: names.get(participant.player_id) ?? "pemain ini" })}>Keluarkan</button>}</li>)}</ul>
         : <div className="empty-state compact-empty"><strong>Belum ada pemain yang absen</strong><p>Jadilah yang pertama hadir.</p></div>}
+    </section>
+
+    <section className="surface">
+      <div className="surface-heading"><div><h2>Daftar tunggu</h2><p>Urut sesuai waktu masuk antrean (FIFO).</p></div><span className={waitingList.length >= 10 ? "capacity-pill capacity-pill-full" : "capacity-pill"}>{waitingList.length}/10</span></div>
+      {notificationError && waitingList.length >= 10 && <p className="notice waitlist-alert-notice" role="status">{notificationError}</p>}
+      {waitingList.length ? <ol className="waitlist-list">{waitingList.map((entry, index) => <li key={entry.player_id} className={entry.player_id === userId ? "waitlist-self" : ""}><span className="waitlist-position">{index + 1}</span><span className="avatar">{(names.get(entry.player_id) ?? "P").slice(0, 1).toUpperCase()}</span><strong>{names.get(entry.player_id) ?? "Pemain"}{entry.player_id === userId ? " (kamu)" : ""}</strong>{index === 0 && <small>Berikutnya masuk</small>}</li>)}</ol>
+        : <div className="empty-state compact-empty"><strong>Belum ada antrean</strong><p>Jika tempat penuh, pemain dapat mendaftar di sini.</p></div>}
     </section>
 
     {isAdmin && <section className="surface">

@@ -4,11 +4,14 @@ Aplikasi PB Badminton responsif dengan Next.js App Router dan Supabase. Pengunju
 
 ## Fitur
 
-- Pendaftaran pemain memerlukan konfirmasi email dan persetujuan admin sebelum dapat ikut sesi.
+- Pendaftaran pemain memerlukan gender, konfirmasi email, dan persetujuan admin sebelum dapat ikut sesi.
+- Pemain dapat meminta tautan reset password melalui email terdaftar dan hanya dapat menggantinya setelah membuka tautan verifikasi.
 - Pemain hanya mendapat Beranda dan Sesi: melihat informasi, histori, absen, dan keluar dari sesi.
 - Admin masuk lewat kata sandi lama (`ADMIN_PASSWORD`) dan mendapat menu Admin serta Leaderboard.
 - Admin dapat menyetujui pemain, membuat dan menutup sesi, mengatur lapangan, mengelola pertandingan, mencatat shuttlecock/hasil, dan mengeluarkan pemain dengan dialog konfirmasi.
 - Sesi baru dimulai dengan dua lapangan (20 tempat); setiap lapangan menyediakan 10 tempat.
+- Saat kapasitas penuh, pemain dapat masuk daftar tunggu FIFO maksimal 10 orang. Jika peserta keluar, pemain teratas otomatis masuk sesi; kenaikan kapasitas juga mempromosikan antrean.
+- Saat antrean mencapai 10 orang, aplikasi dapat mengirim notifikasi WhatsApp ke ketua PB melalui WhatsApp Cloud API.
 - Data sesi, kehadiran, pertandingan, dan leaderboard disimpan di Supabase.
 
 ## Menghubungkan Supabase
@@ -22,8 +25,9 @@ Aplikasi PB Badminton responsif dengan Next.js App Router dan Supabase. Pengunju
    - `SUPABASE_SECRET_KEY`
    - `ADMIN_PASSWORD`
    - `AUTH_SECRET`
-5. Jalankan kedua file SQL di `supabase/migrations/` secara berurutan melalui SQL Editor Supabase.
-6. Di Authentication → URL Configuration, tambahkan `http://localhost:3000/auth/callback` ke Redirect URLs.
+   - `WHATSAPP_LEADER_PHONE`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_ACCESS_TOKEN`
+5. Jalankan semua file SQL di `supabase/migrations/` secara berurutan melalui SQL Editor Supabase. Migrasi `202611200002` membuat profil pending untuk akun yang sudah terdaftar; `202611200004` menambah gender dan mewajibkannya untuk pendaftaran baru; `202611200005` menambah antrean sesi FIFO dan promosi otomatis.
+6. Di Authentication → URL Configuration, tambahkan `http://localhost:3000/auth/callback` dan `http://localhost:3000/auth/callback?next=%2Freset-password` ke Redirect URLs. Untuk deploy, tambahkan kedua URL yang sama pada domain Vercel, misalnya `https://NAMA-APLIKASI.vercel.app/auth/callback` dan `https://NAMA-APLIKASI.vercel.app/auth/callback?next=%2Freset-password`.
 7. Jalankan `npm ci`, `npm run dev`, lalu buka `http://localhost:3000`.
 
 Buat `AUTH_SECRET` baru untuk deploy dengan Node.js:
@@ -35,6 +39,16 @@ node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'
 Gunakan kata sandi admin yang kuat. `AUTH_SECRET` harus berisi nilai acak minimal 32 karakter. Secret key Supabase, kata sandi admin, dan `AUTH_SECRET` hanya untuk server; jangan menaruhnya dalam variabel `NEXT_PUBLIC_*` atau mengirimkannya ke browser. Secret key memberi akses backend istimewa, sehingga endpoint admin memvalidasi cookie admin sebelum menjalankan aksi ([panduan API keys](https://supabase.com/docs/guides/getting-started/migrating-to-new-api-keys)).
 
 Supabase harus mengirim email verifikasi. SMTP bawaan dibatasi untuk percobaan; siapkan SMTP sendiri sebelum membuka pendaftaran untuk pemain umum ([panduan SMTP](https://supabase.com/docs/guides/auth/auth-smtp)).
+
+## Notifikasi WhatsApp daftar tunggu
+
+Notifikasi dikirim melalui WhatsApp Cloud API. Siapkan nomor WhatsApp Business, token akses, dan Phone Number ID dari Meta, lalu isi variabel WhatsApp di `.env.local` dan Vercel. Buat template pesan WhatsApp yang disetujui dengan nama `infinity_session_full`, bahasa `id`, serta tiga variabel teks pada isi pesan:
+
+```text
+Sesi {{1}} sudah penuh dengan {{2}} pemain dalam daftar tunggu. Saat ini tersedia {{3}} lapangan. Disarankan menambah lapangan jika memungkinkan.
+```
+
+Variabelnya berurutan: nama sesi, jumlah pemain yang menunggu, dan jumlah lapangan saat ini. Nomor penerima diisi dengan kode negara dan angka saja, misalnya `62812...`. Tanpa konfigurasi Cloud API dan template yang disetujui, antrean tetap berjalan tetapi notifikasi tidak terkirim.
 
 ## Login administrator
 
@@ -49,6 +63,6 @@ git remote add origin https://github.com/USERNAME/NAMA-REPOSITORY.git
 git push -u origin HEAD
 ```
 
-Hubungkan repository itu ke Vercel agar push berikutnya membangun dan menerbitkan aplikasi. Tambahkan kelima environment variable di atas pada project Vercel; simpan `SUPABASE_SECRET_KEY`, `ADMIN_PASSWORD`, dan `AUTH_SECRET` sebagai Environment Variables server yang terenkripsi. Di Supabase Redirect URLs, tambahkan `https://NAMA-APLIKASI.vercel.app/auth/callback` sesuai domain deploy.
+Hubungkan repository itu ke Vercel agar push berikutnya membangun dan menerbitkan aplikasi. Tambahkan environment variable yang diperlukan di atas pada project Vercel; simpan semua token dan password sebagai Environment Variables server yang terenkripsi. Di Supabase Redirect URLs, tambahkan `https://NAMA-APLIKASI.vercel.app/auth/callback` sesuai domain deploy.
 
 Workflow `.github/workflows/ci.yml` menjalankan build untuk pull request dan push ke `main`. Aplikasi memakai cookies, Proxy, dan server-side actions, sehingga memerlukan runtime Next.js dan tidak cocok untuk GitHub Pages statis.

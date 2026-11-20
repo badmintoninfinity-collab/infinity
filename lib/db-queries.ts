@@ -6,12 +6,14 @@ import type {
   PlayerLeaderboardRow,
   Profile,
   SessionParticipant,
+  SessionWaitlistEntry,
 } from "@/lib/types";
 
 export type SessionView = {
   session: ClubSession | null;
   players: Pick<Profile, "id" | "display_name">[];
   participants: SessionParticipant[];
+  waitingList: SessionWaitlistEntry[];
   matches: MatchRecord[];
   matchPlayers: MatchPlayer[];
 };
@@ -21,7 +23,7 @@ export async function loadHomeData(supabase: SupabaseClient) {
     supabase.from("club_sessions").select("*").order("started_at", { ascending: false }).limit(100),
     supabase.from("matches").select("*").order("started_at", { ascending: false }).limit(1000),
     supabase.from("session_participants").select("session_id,player_id,checked_in_at,left_at").not("checked_in_at", "is", null),
-    supabase.from("profiles").select("id,display_name").eq("approval_status", "approved"),
+    supabase.from("profiles").select("id,display_name,gender").eq("approval_status", "approved"),
     supabase.from("match_players").select("match_id,player_id,team_number"),
   ]);
 
@@ -42,14 +44,15 @@ export async function loadSessionView(supabase: SupabaseClient): Promise<Session
     .eq("status", "active")
     .maybeSingle();
   if (sessionError || !sessionData) {
-    return { session: null, players: [], participants: [], matches: [], matchPlayers: [] };
+    return { session: null, players: [], participants: [], waitingList: [], matches: [], matchPlayers: [] };
   }
 
   const session = sessionData as ClubSession;
-  const [participantResult, profilesResult, matchesResult] = await Promise.all([
+  const [participantResult, profilesResult, matchesResult, waitingListResult] = await Promise.all([
     supabase.from("session_participants").select("*").eq("session_id", session.id),
     supabase.from("profiles").select("id,display_name").eq("approval_status", "approved"),
     supabase.from("matches").select("*").eq("session_id", session.id).order("started_at", { ascending: false }),
+    supabase.from("session_waitlist").select("*").eq("session_id", session.id).order("queued_at", { ascending: true }).order("player_id", { ascending: true }),
   ]);
   const matches = (matchesResult.data ?? []) as MatchRecord[];
   const matchIds = matches.map((match) => match.id);
@@ -62,6 +65,7 @@ export async function loadSessionView(supabase: SupabaseClient): Promise<Session
     session,
     players: (profilesResult.data ?? []) as Pick<Profile, "id" | "display_name">[],
     participants: (participantResult.data ?? []) as SessionParticipant[],
+    waitingList: (waitingListResult.data ?? []) as SessionWaitlistEntry[],
     matches,
     matchPlayers,
   };
@@ -90,12 +94,13 @@ export async function buildLeaderboard(supabase: SupabaseClient): Promise<Player
     else stats.losses += 1;
   });
 
-  return data.players.map((player: { id: string; display_name: string }) => {
+  return data.players.map((player: { id: string; display_name: string; gender: "L" | "P" | null }) => {
     const stats = players.get(player.id) ?? { games: 0, wins: 0, losses: 0 };
     const decidedGames = stats.wins + stats.losses;
     return {
       id: player.id,
       name: player.display_name,
+      gender: player.gender,
       sessions: checkedInSessions.get(player.id)?.size ?? 0,
       games: stats.games,
       wins: stats.wins,
